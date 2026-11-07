@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>보석 맞추기</title>
+<style>
+  :root{--panel:#1a1630;--line:#2e2858;--text:#f3f0ff;--muted:#9a93c0;--accent:#ffcf40}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0%,#2a2150,#0d0b1a 70%) fixed;background-color:#0d0b1a;
+    color:var(--text);font-family:system-ui,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;display:flex;flex-direction:column;
+    align-items:center;padding:16px;user-select:none;-webkit-user-select:none}
+  h1{margin:4px 0 12px;font-size:30px;letter-spacing:3px;
+    background:linear-gradient(90deg,#ff5a6e,#ffcf40,#4fd17a,#4aa8ff,#c86bff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hud{display:flex;gap:10px;margin-bottom:12px;width:100%;max-width:560px}
+  .stat{flex:1;background:var(--panel);border-radius:12px;padding:8px 10px;text-align:center;border:1px solid var(--line)}
+  .stat .l{font-size:12px;color:var(--muted)}
+  .stat .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+  #movesV.low{color:#ff6b7d}
+  #wrap{position:relative}
+  canvas{display:block;border-radius:14px;background:#0f0c20;box-shadow:0 10px 40px rgba(0,0,0,.6),0 0 0 2px var(--line);touch-action:none;cursor:pointer}
+  .controls{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  button{background:var(--panel);color:var(--text);border:1px solid #3d3570;border-radius:10px;padding:10px 18px;font-size:15px;cursor:pointer;font-family:inherit}
+  button:hover{background:#2a2450}
+  button.primary{background:linear-gradient(180deg,#ffd75e,#f0a91f);color:#2a1a00;border:none;font-weight:700}
+  #overlay{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(5,3,15,.85);border-radius:14px;gap:10px;text-align:center;padding:16px}
+  #overlay.show{display:flex}
+  #overlay h2{margin:0;font-size:30px;color:var(--accent)}
+  #overlay p{margin:0;color:var(--muted);font-size:16px}
+  #overlay .big{font-size:40px;font-weight:800;color:var(--text)}
+  .help{margin-top:12px;color:var(--muted);font-size:13px;text-align:center;max-width:560px;line-height:1.6}
+</style>
+</head>
+<body>
+<h1>💎 보석 맞추기</h1>
+<div class="hud">
+  <div class="stat"><div class="l">점수</div><div class="v" id="scoreV">0</div></div>
+  <div class="stat"><div class="l">남은 이동</div><div class="v" id="movesV">30</div></div>
+  <div class="stat"><div class="l">최고 점수</div><div class="v" id="bestV">0</div></div>
+</div>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+  <div id="overlay">
+    <h2>게임 종료!</h2>
+    <p>최종 점수</p>
+    <div class="big" id="finalV">0</div>
+    <p id="bestMsg"></p>
+    <button class="primary" id="againBtn">다시 하기</button>
+  </div>
+</div>
+<div class="controls">
+  <button id="newBtn">🔄 새 게임</button>
+  <button id="hintBtn">💡 힌트</button>
+  <button id="soundBtn">🔊 소리 켜짐</button>
+</div>
+<div class="help">같은 보석을 가로나 세로로 3개 이상 맞추세요. 보석을 드래그하거나, 두 보석을 차례로 클릭해 자리를 바꿀 수 있어요.<br>4개·5개를 맞추거나 연쇄 콤보를 만들면 보너스 점수!</div>
+
+<script>
+(() => {
+const N = 8, MAX_MOVES = 30;
+
+// ---------- 보석 정의 ----------
+const poly = (n, r, rot) => Array.from({length:n}, (_, i) => {
+  const a = rot + i * Math.PI * 2 / n; return [Math.cos(a) * r, Math.sin(a) * r];
+});
+const GEMS = [
+  { base:'#e8283c', pts:[[0,-0.95],[0.95,0],[0,0.95],[-0.95,0]] },                 // 빨강 다이아
+  { base:'#2fbf4a', pts:[[0,-0.92],[0.95,0.78],[-0.95,0.78]] },                      // 초록 삼각
+  { base:'#2f7cf0', pts:[[-0.95,-0.32],[-0.52,-0.82],[0.52,-0.82],[0.95,-0.32],[0,0.92]] }, // 파랑 브릴리언트
+  { base:'#ec5fc0', pts:poly(8, 0.95, Math.PI/8) },                                  // 분홍 팔각
+  { base:'#f5b316', pts:poly(6, 0.95, 0) },                                          // 노랑 육각
+  { base:'#9b45e0', pts:poly(8, 0.95, 0), round:true },                              // 보라 원형
+];
+
+function shade(hex, amt){
+  const n = parseInt(hex.slice(1), 16);
+  let r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  const f = c => Math.round(amt >= 0 ? c + (255 - c) * amt : c * (1 + amt));
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+}
+function pathPoly(x, P){ x.beginPath(); P.forEach(([a,b],i) => i ? x.lineTo(a,b) : x.moveTo(a,b)); x.closePath(); }
+
+function makeSprite(g, size){
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const x = cv.getContext('2d'); x.translate(size/2, size/2);
+  const R = size * 0.4;
+  const P = g.pts.map(([a,b]) => [a*R, b*R]);
+  const I = P.map(([a,b]) => [a*0.52, b*0.52 - R*0.06]);
+  const L = [-0.5, -0.85];
+
+  x.save(); x.shadowColor = 'rgba(0,0,0,.55)'; x.shadowBlur = size*0.07; x.shadowOffsetY = size*0.04;
+  pathPoly(x, P); x.fillStyle = shade(g.base, -0.4); x.fill(); x.restore();
+
+  // 면(facet)
+  for (let i = 0; i < P.length; i++){
+    const j = (i + 1) % P.length;
+    const ex = P[j][0]-P[i][0], ey = P[j][1]-P[i][1];
+    let nx = ey, ny = -ex; const len = Math.hypot(nx, ny); nx /= len; ny /= len;
+    const mx = (P[i][0]+P[j][0])/2, my = (P[i][1]+P[j][1])/2;
+    if (nx*mx + ny*my < 0){ nx = -nx; ny = -ny; }
+    const d = nx*L[0] + ny*L[1];
+    pathPoly(x, [P[i], P[j], I[j], I[i]]);
+    x.fillStyle = shade(g.base, d * 0.5); x.fill();
+    x.strokeStyle = 'rgba(255,255,255,.18)'; x.lineWidth = Math.max(1, size*0.008); x.stroke();
+  }
+  // 윗면(table)
+  const gr = x.createLinearGradient(-R*0.5, -R*0.6, R*0.5, R*0.5);
+  gr.addColorStop(0, shade(g.base, 0.55)); gr.addColorStop(1, shade(g.base, 0.05));
+  if (g.round){
+    x.beginPath(); x.arc(0, -R*0.04, R*0.5, 0, Math.PI*2);
+    const rg = x.createRadialGradient(-R*0.15, -R*0.2, R*0.05, 0, 0, R*0.55);
+    rg.addColorStop(0, '#fff'); rg.addColorStop(0.35, shade(g.base, 0.55)); rg.addColorStop(1, shade(g.base, -0.05));
+    x.fillStyle = rg; x.fill();
+  } else {
+    pathPoly(x, I); x.fillStyle = gr; x.fill();
+  }
+  // 하이라이트
+  x.save(); x.globalAlpha = 0.85;
+  x.beginPath(); x.ellipse(-R*0.2, -R*0.28, R*0.16, R*0.08, -0.6, 0, Math.PI*2);
+  x.fillStyle = '#fff'; x.fill(); x.restore();
+  // 외곽선
+  pathPoly(x, P); x.strokeStyle = shade(g.base, -0.6); x.lineWidth = size*0.02; x.lineJoin = 'round'; x.stroke();
+  return cv;
+}
+
+// ---------- 캔버스 / 렌더 ----------
+const canvas = document.getElementById('cv'), ctx = canvas.getContext('2d');
+let cell = 60, dpr = 1, sprites = [];
+function resize(){
+  const size = Math.max(240, Math.min(560, window.innerWidth - 32));
+  cell = size / N; dpr = window.devicePixelRatio || 1;
+  canvas.style.width = canvas.style.height = size + 'px';
+  canvas.width = canvas.height = Math.round(size * dpr);
+  sprites = GEMS.map(g => makeSprite(g, Math.round(cell * dpr)));
+}
+window.addEventListener('resize', resize); resize();
+
+// ---------- 트윈 ----------
+const easeOut = t => 1 - (1-t)**3, easeIn = t => t*t;
+const bounce = t => { const n=7.5625, d=2.75;
+  if (t < 1/d) return n*t*t; if (t < 2/d) return n*(t-=1.5/d)*t+.75;
+  if (t < 2.5/d) return n*(t-=2.25/d)*t+.9375; return n*(t-=2.625/d)*t+.984375; };
+const tweens = [];
+function tween(o, to, dur, ease = easeOut){
+  return new Promise(res => {
+    const from = {}; for (const k in to) from[k] = o[k];
+    tweens.push({o, from, to, dur, t0: performance.now(), ease, res});
+  });
+}
+
+// ---------- 사운드 ----------
+let actx = null, soundOn = true;
+function beep(freq, dur = 0.14, type = 'sine', vol = 0.12){
+  if (!soundOn) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur);
+  } catch(e){}
+}
+
+// ---------- 게임 상태 ----------
+let board, score, moves, busy = false, over = false, selected = null, hintMove = null, lastAct = 0;
+let best = 0; try { best = +localStorage.getItem('gem-best') || 0; } catch(e){}
+const particles = [], popups = [];
+const $ = id => document.getElementById(id);
+const rnd = () => Math.floor(Math.random() * GEMS.length);
+const newGem = (t, c, y) => ({t, x:c, y, s:1, a:1});
+
+function updateHud(){
+  $('scoreV').textContent = score.toLocaleString();
+  $('movesV').textContent = moves;
+  $('movesV').classList.toggle('low', moves <= 5);
+  $('bestV').textContent = best.toLocaleString();
+}
+
+function findMatches(){
+  const set = new Set(), groups = [];
+  const scan = (get) => {
+    for (let i = 0; i < N; i++){
+      let run = 1;
+      for (let j = 1; j <= N; j++){
+        const a = j < N ? get(i, j) : null, b = get(i, j-1);
+        if (a && b && a.t === b.t) run++;
+        else {
+          if (run >= 3){ const grp = []; for (let k = j-run; k < j; k++){ set.add(get(i,k)); grp.push(get(i,k)); } groups.push(grp); }
+          run = 1;
+        }
+      }
+    }
+  };
+  scan((r, c) => board[r][c]);
+  scan((c, r) => board[r][c]);
+  return {set, groups};
+}
+
+function findMove(){
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    for (const [dr, dc] of [[0,1],[1,0]]){
+      const r2 = r+dr, c2 = c+dc; if (r2 >= N || c2 >= N) continue;
+      [board[r][c], board[r2][c2]] = [board[r2][c2], board[r][c]];
+      const ok = findMatches().set.size > 0;
+      [board[r][c], board[r2][c2]] = [board[r2][c2], board[r][c]];
+      if (ok) return [r, c, r2, c2];
+    }
+  }
+  return null;
+}
+
+function fillTypes(){
+  // 매치가 없고 가능한 이동이 있는 판 생성
+  do {
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+      let t;
+      do { t = rnd(); } while (
+        (c >= 2 && board[r][c-1].t === t && board[r][c-2].t === t) ||
+        (r >= 2 && board[r-1][c].t === t && board[r-2][c].t === t));
+      board[r][c] = board[r][c] || newGem(t, c, r); board[r][c].t = t;
+    }
+  } while (!findMove());
+}
+
+async function newGame(){
+  busy = true; over = false; selected = null; hintMove = null;
+  $('overlay').classList.remove('show');
+  score = 0; moves = MAX_MOVES; updateHud();
+  board = Array.from({length:N}, () => Array(N).fill(null));
+  fillTypes();
+  const ps = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    const g = board[r][c]; g.y = r - N - 1 - (N - r) * 0.15;
+    ps.push(tween(g, {y:r}, 600 + r*40 + c*25, bounce));
+  }
+  await Promise.all(ps);
+  busy = false; lastAct = performance.now();
+}
+
+async function trySwap(r1, c1, r2, c2){
+  if (busy || over) return;
+  busy = true; selected = null; hintMove = null;
+  const a = board[r1][c1], b = board[r2][c2];
+  board[r1][c1] = b; board[r2][c2] = a;
+  beep(520, 0.06, 'triangle', 0.06);
+  await Promise.all([tween(a, {x:c2, y:r2}, 170), tween(b, {x:c1, y:r1}, 170)]);
+  if (findMatches().set.size === 0){
+    board[r1][c1] = a; board[r2][c2] = b;
+    beep(150, 0.18, 'square', 0.05);
+    await Promise.all([tween(a, {x:c1, y:r1}, 170), tween(b, {x:c2, y:r2}, 170)]);
+    busy = false; lastAct = performance.now(); return;
+  }
+  moves--; updateHud();
+  await resolve();
+  if (moves <= 0) endGame();
+  else if (!findMove()) await shuffle();
+  busy = false; lastAct = performance.now();
+}
+
+async function resolve(){
+  let combo = 0;
+  while (true){
+    const {set, groups} = findMatches();
+    if (!set.size) break;
+    combo++;
+    let pts = 0;
+    for (const grp of groups){
+      const len = grp.length;
+      const p = (len * 10 + (len - 3) * 30) * combo; pts += p;
+      const cx = grp.reduce((s,g) => s + g.x, 0) / len, cy = grp.reduce((s,g) => s + g.y, 0) / len;
+      popups.push({x:cx+0.5, y:cy+0.5, text:'+'+p, life:1, color:GEMS[grp[0].t].base, big: len >= 4});
+    }
+    if (combo >= 2) popups.push({x:N/2, y:N/2, text:`콤보 x${combo}!`, life:1.3, color:'#ffcf40', big:true, combo:true});
+    score += pts; updateHud();
+    beep(440 * Math.pow(1.19, combo - 1), 0.18, 'sine', 0.13);
+    setTimeout(() => beep(660 * Math.pow(1.19, combo - 1), 0.2, 'sine', 0.08), 60);
+    for (const g of set) for (let i = 0; i < 7; i++){
+      const a = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 3.5;
+      particles.push({x:g.x+0.5, y:g.y+0.5, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - 2, life:1, color:GEMS[g.t].base, size:0.05+Math.random()*0.07});
+    }
+    await Promise.all([...set].map(g => tween(g, {s:0, a:0}, 220, easeIn)));
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (set.has(board[r][c])) board[r][c] = null;
+
+    // 중력 + 새 보석
+    const falls = [];
+    for (let c = 0; c < N; c++){
+      let w = N - 1;
+      for (let r = N - 1; r >= 0; r--){
+        if (board[r][c]){ if (r !== w){ board[w][c] = board[r][c]; board[r][c] = null; } w--; }
+      }
+      const missing = w + 1;
+      for (let r = 0; r <= w; r++) board[r][c] = newGem(rnd(), c, r - missing);
+      for (let r = 0; r < N; r++){
+        const g = board[r][c];
+        if (g.y !== r) falls.push(tween(g, {y:r}, 260 + (r - g.y) * 45, bounce));
+      }
+    }
+    await Promise.all(falls);
+  }
+}
+
+async function shuffle(){
+  popups.push({x:N/2, y:N/2, text:'섞는 중...', life:1.5, color:'#9ad0ff', big:true, combo:true});
+  const all = board.flat();
+  await Promise.all(all.map(g => tween(g, {s:0}, 250, easeIn)));
+  fillTypes();
+  await Promise.all(all.map(g => tween(g, {s:1}, 300, easeOut)));
+}
+
+function endGame(){
+  over = true;
+  const isBest = score > best;
+  if (isBest){ best = score; try { localStorage.setItem('gem-best', best); } catch(e){} }
+  updateHud();
+  $('finalV').textContent = score.toLocaleString();
+  $('bestMsg').textContent = isBest ? '🎉 새로운 최고 기록!' : `최고 점수: ${best.toLocaleString()}`;
+  setTimeout(() => $('overlay').classList.add('show'), 400);
+  beep(392, 0.2); setTimeout(() => beep(523, 0.2), 150); setTimeout(() => beep(659, 0.35), 300);
+}
+
+// ---------- 입력 ----------
+let down = null;
+function cellAt(e){
+  const rect = canvas.getBoundingClientRect();
+  const c = Math.floor((e.clientX - rect.left) / cell), r = Math.floor((e.clientY - rect.top) / cell);
+  return (r >= 0 && r < N && c >= 0 && c < N) ? {r, c} : null;
+}
+canvas.addEventListener('pointerdown', e => {
+  if (busy || over) return;
+  const p = cellAt(e); if (!p) return;
+  down = {...p, x:e.clientX, y:e.clientY, moved:false};
+  try { canvas.setPointerCapture(e.pointerId); } catch(_){}
+});
+canvas.addEventListener('pointermove', e => {
+  if (!down || down.moved) return;
+  const dx = e.clientX - down.x, dy = e.clientY - down.y;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < cell * 0.35) return;
+  let r2 = down.r, c2 = down.c;
+  if (Math.abs(dx) > Math.abs(dy)) c2 += Math.sign(dx); else r2 += Math.sign(dy);
+  down.moved = true;
+  if (r2 >= 0 && r2 < N && c2 >= 0 && c2 < N) trySwap(down.r, down.c, r2, c2);
+});
+canvas.addEventListener('pointerup', () => {
+  if (down && !down.moved && !busy && !over){
+    const {r, c} = down;
+    if (selected && Math.abs(selected.r - r) + Math.abs(selected.c - c) === 1) trySwap(selected.r, selected.c, r, c);
+    else if (selected && selected.r === r && selected.c === c) selected = null;
+    else { selected = {r, c}; beep(700, 0.05, 'triangle', 0.05); }
+    lastAct = performance.now(); hintMove = null;
+  }
+  down = null;
+});
+
+$('newBtn').onclick = () => { if (!busy) newGame(); };
+$('againBtn').onclick = () => newGame();
+$('hintBtn').onclick = () => { if (!busy && !over){ hintMove = findMove(); } };
+$('soundBtn').onclick = () => { soundOn = !soundOn; $('soundBtn').textContent = soundOn ? '🔊 소리 켜짐' : '🔇 소리 꺼짐'; };
+
+// ---------- 메인 루프 ----------
+function roundRect(x, y, w, h, r){ ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+let prev = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now - prev) / 1000); prev = now;
+  for (let i = tweens.length - 1; i >= 0; i--){
+    const tw = tweens[i], t = Math.min(1, (now - tw.t0) / tw.dur), e = tw.ease(t);
+    for (const k in tw.to) tw.o[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * e;
+    if (t >= 1){ tweens.splice(i, 1); tw.res(); }
+  }
+  if (!busy && !over && !hintMove && board && now - lastAct > 7000) hintMove = findMove();
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const S = cell * N; ctx.clearRect(0, 0, S, S);
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    ctx.fillStyle = (r + c) % 2 ? '#17132e' : '#100d22'; ctx.fillRect(c*cell, r*cell, cell, cell);
+  }
+  if (selected){
+    const pulse = 0.55 + 0.25 * Math.sin(now / 150);
+    roundRect(selected.c*cell + 2, selected.r*cell + 2, cell - 4, cell - 4, cell*0.18);
+    ctx.fillStyle = `rgba(255,220,120,${pulse*0.35})`; ctx.fill();
+    ctx.strokeStyle = `rgba(255,220,120,${pulse})`; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  if (hintMove && !busy){
+    const a = 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(now / 180));
+    for (const [r, c] of [[hintMove[0], hintMove[1]], [hintMove[2], hintMove[3]]]){
+      roundRect(c*cell + 3, r*cell + 3, cell - 6, cell - 6, cell*0.18);
+      ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.lineWidth = 2.5; ctx.stroke();
+    }
+  }
+  if (board) for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    const g = board[r][c]; if (!g || g.s <= 0.01) continue;
+    let s = g.s;
+    if (selected && selected.r === r && selected.c === c) s *= 1 + 0.07 * Math.sin(now / 110);
+    const sz = cell * s;
+    ctx.globalAlpha = g.a;
+    ctx.drawImage(sprites[g.t], (g.x + 0.5)*cell - sz/2, (g.y + 0.5)*cell - sz/2, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+
+  // 파티클
+  for (let i = particles.length - 1; i >= 0; i--){
+    const p = particles[i];
+    p.life -= dt * 1.6; if (p.life <= 0){ particles.splice(i, 1); continue; }
+    p.vy += 9 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x*cell, p.y*cell, p.size*cell*p.life + 1, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = p.life * 0.8; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(p.x*cell, p.y*cell, p.size*cell*p.life*0.4, 0, Math.PI*2); ctx.fill();
+  }
+  // 점수 팝업
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = popups.length - 1; i >= 0; i--){
+    const p = popups[i];
+    p.life -= dt; if (p.life <= 0){ popups.splice(i, 1); continue; }
+    if (!p.combo) p.y -= dt * 0.8;
+    const fs = cell * (p.combo ? 0.75 : p.big ? 0.5 : 0.38) * (p.combo ? 1 + (1 - Math.min(1, p.life)) * 0.2 : 1);
+    ctx.globalAlpha = Math.min(1, p.life * 2);
+    ctx.font = `800 ${fs}px system-ui, "Malgun Gothic", sans-serif`;
+    ctx.lineWidth = fs * 0.16; ctx.strokeStyle = 'rgba(0,0,0,.75)';
+    ctx.strokeText(p.text, p.x*cell, p.y*cell);
+    ctx.fillStyle = p.combo ? p.color : '#fff'; ctx.fillText(p.text, p.x*cell, p.y*cell);
+  }
+  ctx.globalAlpha = 1;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+newGame();
+})();
+</script>
+</body>
+</html>
